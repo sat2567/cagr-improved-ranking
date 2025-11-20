@@ -39,7 +39,7 @@ CATEGORY_MAP = {
 }
 
 # ============================================================================
-# 2. HELPER FUNCTIONS (MATH) - MODIFIED
+# 2. HELPER FUNCTIONS (MATH)
 # ============================================================================
 
 def calculate_sharpe_ratio(returns):
@@ -92,8 +92,6 @@ def calculate_flexible_momentum(series, w_3m, w_6m, w_12m, use_risk_adjust=False
 
     ret_3m, ret_6m, ret_12m = 0.0, 0.0, 0.0
     
-    # Implementation logic for momentum returns remains the same...
-
     if w_3m > 0:
         p_3m = get_past_price(91)
         if pd.isna(p_3m) or p_3m == 0: return np.nan
@@ -181,7 +179,7 @@ def calculate_alpha_beta_treynor(returns, bench_returns):
 
 
 # ============================================================================
-# 3. DATA LOADING (No change needed)
+# 3. DATA LOADING
 # ============================================================================
 
 @st.cache_data
@@ -201,13 +199,19 @@ def load_fund_data(category_key: str):
         df = pd.read_csv(path)
         df.columns = [c.lower().strip() for c in df.columns]
         if 'scheme_code' in df.columns: df['scheme_code'] = df['scheme_code'].astype(str)
+        
+        # Robust Date Parsing
         df['date'] = pd.to_datetime(df['date'], errors='coerce', infer_datetime_format=True)
+
         df['nav'] = pd.to_numeric(df['nav'], errors='coerce')
         df = df.dropna(subset=['date', 'nav']) 
         df = df.sort_values('date').drop_duplicates(subset=['scheme_code', 'date'], keep='last')
         scheme_map = df[['scheme_code', 'scheme_name']].drop_duplicates('scheme_code').set_index('scheme_code')['scheme_name'].to_dict()
         nav_wide = df.pivot(index='date', columns='scheme_code', values='nav')
+        
+        # Conservative fill (2 days max)
         nav_wide = nav_wide.ffill(limit=2) 
+        
         return nav_wide, scheme_map
     except Exception as e:
         st.error(f"Error loading fund data: {e}"); return None, None
@@ -229,7 +233,7 @@ def load_nifty_data():
         st.error(f"Error loading benchmark data: {e}"); return None
 
 # ============================================================================
-# 4. BACKTESTING ENGINE - MODIFIED
+# 4. BACKTESTING ENGINE
 # ============================================================================
 
 def get_lookback_data(nav_wide, analysis_date, strategy_type):
@@ -271,7 +275,6 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, custom_weights=No
         
         # --- A) STANDARD STRATEGIES (No change to logic) ---
         if strategy_type != 'custom':
-            # ... standard strategy logic ... (omitted for brevity, assume it works)
              for col in nav_wide.columns:
                 series = hist_data[col].dropna()
                 if len(series) < 126: continue
@@ -293,7 +296,7 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, custom_weights=No
                 
                 if not np.isnan(val): scores[col] = val
 
-        # --- B) CUSTOM STRATEGY - MODIFIED ---
+        # --- B) CUSTOM STRATEGY ---
         else:
             temp_metrics = []
             
@@ -476,7 +479,7 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
         ranking_directions = {
             'sharpe': True, 'sortino': True, 'momentum': True, 'info_ratio': True, 
             'alpha': True, 'treynor': True, 'calmar': True, 
-            'volatility': False, 'beta': False, 'max_dd': True # max_dd is negative, so higher value (closer to 0) means less loss.
+            'volatility': False, 'beta': False, 'max_dd': True
         }
         
         for metric, ascending in ranking_directions.items():
@@ -491,7 +494,7 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
     if has_future:
         df['Actual Rank'] = df['Forward Return %'].rank(ascending=False, method='min')
     
-    # Select columns for final display, dropping intermediate scores (like individual metric ranks)
+    # Select columns for final display
     cols_to_display = ['name', 'Strategy Rank', 'Forward Return %']
     
     # Add calculated metrics to display if they were used (have a weight > 0)
@@ -542,9 +545,10 @@ def main():
         
     if nav_data is None:
         st.error("❌ Fund data not found or failed to load."); return
-
-    # --- Display Function (Logic remains same) ---
-    def display_strategy_results(strat_type, c_weights=None):
+    
+    # --- Display Function (Now accepts context variables explicitly) ---
+    def display_strategy_results(strat_type, c_weights, nav_data, names_map, top_n, holding_days, momentum_config, nifty_data):
+        
         hist_df, eq_curve = run_backtest(nav_data, strat_type, top_n, holding_days, c_weights, momentum_config, nifty_data)
         
         if hist_df is None or hist_df.empty:
@@ -615,12 +619,15 @@ def main():
     # --- Tabs ---
     tab_mom, tab_sharpe, tab_custom = st.tabs(["🚀 Momentum Strategy", "⚖️ Sharpe Ratio", "🛠️ Custom Strategy"])
 
+    # Explicitly pass all required context variables to avoid NameError
+    context_args = (nav_data, names_map, top_n, holding_days, momentum_config, nifty_data)
+
     with tab_mom:
         st.info(f"Momentum Weights: 3M={momentum_config['w_3m']:.2f}, 6M={momentum_config['w_6m']:.2f}, 1Y={momentum_config['w_12m']:.2f}. Risk Adjust: {momentum_config['risk_adjust']}")
-        display_strategy_results('momentum')
+        display_strategy_results('momentum', None, *context_args)
 
     with tab_sharpe:
-        display_strategy_results('sharpe')
+        display_strategy_results('sharpe', None, *context_args)
 
     with tab_custom:
         with st.form("custom_strat_form"):
@@ -662,7 +669,7 @@ def main():
                 st.session_state['custom_weights'] = weights
         
         if st.session_state.get('custom_run'):
-            display_strategy_results('custom', st.session_state['custom_weights'])
+            display_strategy_results('custom', st.session_state['custom_weights'], *context_args)
 
 if __name__ == "__main__":
     if 'custom_run' not in st.session_state:
