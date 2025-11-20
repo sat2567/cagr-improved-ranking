@@ -120,8 +120,6 @@ def calculate_flexible_momentum(series, w_3m, w_6m, w_12m, use_risk_adjust=False
         
     return raw_score
 
-# --- NEW MATH FUNCTIONS ---
-
 def calculate_max_drawdown(series):
     """Returns Max Drawdown (Negative value: -0.30 for 30% loss)"""
     if len(series) < 10: return np.nan
@@ -218,14 +216,8 @@ def load_fund_data(category_key: str):
 
 @st.cache_data
 def load_nifty_data():
-    # Assuming 'data/nifty100_funds.csv' is a placeholder path.
-    # The actual file is `nifty100_funds.csv` in the current working directory.
-    # Since this is a file provided by the user, we should assume the path is correct 
-    # for the Streamlit cloud environment, or simply use the file name if it's in the root.
-    # I'll keep the path as defined by the user's initial code, assuming their file structure.
     path = 'data/nifty100_funds.csv'
     if not os.path.exists(path): 
-        # Fallback to current directory if 'data/' prefix is incorrect
         path = 'nifty100_funds.csv'
         if not os.path.exists(path): return None
 
@@ -242,7 +234,7 @@ def load_nifty_data():
         st.error(f"Error loading benchmark data: {e}"); return None
 
 # ============================================================================
-# 4. BACKTESTING ENGINE (UPDATED FOR NEW METRICS)
+# 4. BACKTESTING ENGINE 
 # ============================================================================
 
 def get_lookback_data(nav_wide, analysis_date, strategy_type):
@@ -305,7 +297,7 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, custom_weights=No
                 
                 if not np.isnan(val): scores[col] = val
 
-        # --- B) CUSTOM STRATEGY (UPDATED) ---
+        # --- B) CUSTOM STRATEGY ---
         else:
             temp_metrics = []
             
@@ -363,20 +355,16 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, custom_weights=No
                 metrics_df = pd.DataFrame(temp_metrics).set_index('id')
                 final_score_col = pd.Series(0.0, index=metrics_df.index)
                 
-                # Metrics where HIGHER is BETTER
-                for metric in ['sharpe', 'sortino', 'momentum', 'info_ratio', 'alpha', 'treynor', 'calmar']:
+                # List of metrics and their ranking direction (True=Ascending/Higher is Better)
+                ranking_directions = {
+                    'sharpe': True, 'sortino': True, 'momentum': True, 'info_ratio': True, 
+                    'alpha': True, 'treynor': True, 'calmar': True, 
+                    'volatility': False, 'beta': False, 'max_dd': True # max_dd is negative, so True ranks smallest loss highest
+                }
+
+                for metric, ascending in ranking_directions.items():
                     if metric in metrics_df.columns:
-                        final_score_col = final_score_col.add(metrics_df[metric].rank(pct=True) * custom_weights[metric], fill_value=0)
-                
-                # Metrics where LOWER is BETTER 
-                # (Volatility, Beta: Lower means less risk)
-                for metric in ['volatility', 'beta']:
-                    if metric in metrics_df.columns:
-                        final_score_col = final_score_col.add(metrics_df[metric].rank(pct=True, ascending=False) * custom_weights[metric], fill_value=0)
-                
-                # Max Drawdown (it's negative, so ranking by value already means smallest loss is highest rank)
-                if 'max_dd' in metrics_df.columns:
-                    final_score_col = final_score_col.add(metrics_df['max_dd'].rank(pct=True) * custom_weights['max_dd'], fill_value=0)
+                        final_score_col = final_score_col.add(metrics_df[metric].rank(pct=True, ascending=ascending) * custom_weights[metric], fill_value=0)
 
                 scores = final_score_col.to_dict()
 
@@ -408,6 +396,10 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, custom_weights=No
         
     return pd.DataFrame(history), pd.DataFrame(equity_curve)
 
+# ============================================================================
+# 5. SNAPSHOT GENERATION (FIXED)
+# ============================================================================
+
 def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type, names_map, custom_weights=None, momentum_config=None, benchmark_series=None):
     try: idx = nav_wide.index.get_loc(analysis_date)
     except KeyError: return pd.DataFrame()
@@ -436,7 +428,7 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
         rets = short_series.pct_change().dropna()
         nav_series_1y = series[series.index >= date_1y_ago]
 
-        # --- SCORES (ONLY CALCULATE IF WEIGHT > 0 OR IF STANDARD STRATEGY) ---
+        # --- SCORES ---
         if strategy_type == 'sharpe': row['Score'] = calculate_sharpe_ratio(rets)
         elif strategy_type == 'sortino': row['Score'] = calculate_sortino_ratio(rets)
         elif strategy_type == 'momentum':
@@ -471,7 +463,7 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
             # Drawdown/Calmar Metrics
             required_nav_metrics = any(custom_weights.get(m, 0) > 0 for m in ['max_dd', 'calmar'])
             if required_nav_metrics and not nav_series_1y.empty:
-                # Max Drawdown is typically shown as a positive percentage (10% loss) but calculated as negative (-0.10)
+                # Max Drawdown is shown as a POSITIVE percentage for display
                 if custom_weights.get('max_dd', 0) > 0: row['max_dd'] = abs(calculate_max_drawdown(nav_series_1y)) * 100 
                 if custom_weights.get('calmar', 0) > 0: row['calmar'] = calculate_calmar_ratio(nav_series_1y)
         
@@ -490,27 +482,29 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
     df = pd.DataFrame(temp_data)
     if df.empty: return df
 
+    # Dictionary of all possible rankable metrics and their desired direction for RATING (True = Higher is Better)
+    all_ranking_directions = {
+        'sharpe': True, 'sortino': True, 'momentum': True, 'info_ratio': True, 
+        'alpha': True, 'treynor': True, 'calmar': True, 
+        'volatility': False, 'beta': False, 'max_dd': False # max_dd is now positive % for display, so False is correct (Lower is Better)
+    }
+
     # --- RANKING ---
     if strategy_type == 'custom':
         df['Score'] = 0.0
         
-        # List of metrics and their ranking direction (True=Ascending/Higher is Better)
-        ranking_directions = {
-            'sharpe': True, 'sortino': True, 'momentum': True, 'info_ratio': True, 
-            'alpha': True, 'treynor': True, 'calmar': True, 
-            'volatility': False, 'beta': False, 'max_dd': False 
-        }
-        
-        for metric, ascending in ranking_directions.items():
+        for metric, ascending in all_ranking_directions.items():
             if metric in df.columns and custom_weights.get(metric, 0) > 0:
-                # Note on Max Drawdown: It's stored as an absolute positive value here (e.g., 30.0 for 30% loss)
-                # so LOWER is BETTER (ascending=False).
                 df['Score'] = df['Score'].add(
                     df[metric].rank(pct=True, ascending=ascending) * custom_weights[metric], 
                     fill_value=0
                 )
-                
-    df['Strategy Rank'] = df['Score'].rank(ascending=False, method='min')
+    
+    # Calculate Strategy Rank (for both standard and custom, based on the now-existing 'Score' column)
+    if 'Score' in df.columns:
+        df['Strategy Rank'] = df['Score'].rank(ascending=False, method='min')
+    else:
+        df['Strategy Rank'] = np.nan
     
     if has_future:
         df['Actual Rank'] = df['Forward Return %'].rank(ascending=False, method='min')
@@ -518,16 +512,22 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
     # Select columns for final display
     cols_to_display = ['name', 'Strategy Rank', 'Forward Return %']
     
-    # Add calculated metrics to display if they were used (have a weight > 0)
-    for metric in ranking_directions.keys():
-        if metric in df.columns:
-            cols_to_display.append(metric)
+    if strategy_type == 'custom':
+        # For custom, show all individual metrics that were used
+        for metric in all_ranking_directions.keys():
+            if metric in df.columns:
+                cols_to_display.append(metric)
+    elif 'Score' in df.columns:
+        # For standard strategies, show the single calculated 'Score'
+        cols_to_display.append('Score')
 
-    return df[cols_to_display].sort_values('Strategy Rank')
-
+    # Filter columns to only include those present in the DataFrame
+    final_cols = [c for c in cols_to_display if c in df.columns]
+    
+    return df[final_cols].sort_values('Strategy Rank')
 
 # ============================================================================
-# 5. DASHBOARD UI (UPDATED WITH NEW SLIDERS)
+# 6. DASHBOARD UI (UNCHANGED, BUT INCLUDED FOR COMPLETENESS)
 # ============================================================================
 
 def main():
@@ -611,13 +611,13 @@ def main():
         
         if sel_date_str:
             sel_date = pd.to_datetime(sel_date_str)
-            # Pass all context variables explicitly
             df = generate_snapshot_table(nav_data, sel_date, holding_days, strat_type, names_map, c_weights, momentum_config, nifty_data)
             
             if not df.empty:
                 def highlight_top_n(row):
                     if row['Strategy Rank'] <= top_n:
-                        return ['background-color: #e6fffa'] * len(row)
+                        # Highlight selected funds in a light green
+                        return ['background-color: #e6fffa'] * len(row) 
                     return [''] * len(row)
                 
                 # Format map for cleaner display
@@ -625,7 +625,7 @@ def main():
                     col: "%.2f%%" for col in ['Forward Return %', 'volatility', 'alpha', 'max_dd'] if col in df.columns
                 }
                 format_map.update({
-                    col: "%.2f" for col in ['sharpe', 'sortino', 'calmar', 'momentum', 'info_ratio', 'treynor', 'beta'] if col in df.columns
+                    col: "%.2f" for col in ['Score', 'sharpe', 'sortino', 'calmar', 'momentum', 'info_ratio', 'treynor', 'beta'] if col in df.columns
                 })
                 
                 # Rename columns for display
@@ -635,12 +635,14 @@ def main():
                     'max_dd': 'Max DD %',
                     'info_ratio': 'Info Ratio',
                     'treynor': 'Treynor Ratio',
-                    'calmar': 'Calmar Ratio'
+                    'calmar': 'Calmar Ratio',
+                    'Score': 'Strategy Score'
                 }
                 
-                # Apply renames and sort to display columns
                 df_display = df.rename(columns=column_renames)
-                cols_to_display = ['name', 'Strategy Rank', 'Forward Return %'] + [column_renames.get(c, c) for c in df.columns if c not in ['id', 'Score', 'name', 'Strategy Rank', 'Forward Return %', 'Actual Rank']]
+                
+                # Filter columns to show only calculated metrics + name/rank/return
+                cols_to_display = ['name', 'Strategy Rank', 'Forward Return %'] + [column_renames.get(c, c) for c in df.columns if c not in ['id', 'name', 'Strategy Rank', 'Forward Return %', 'Actual Rank']]
                 
                 st.dataframe(
                     df_display[cols_to_display].style.format(format_map).apply(highlight_top_n, axis=1),
@@ -656,7 +658,7 @@ def main():
     # --- Tabs ---
     tab_mom, tab_sharpe, tab_custom = st.tabs(["🚀 Momentum Strategy", "⚖️ Sharpe Ratio", "🛠️ Custom Strategy"])
 
-    # Explicitly pass all required context variables to avoid NameError
+    # Explicitly pass all required context variables
     context_args = (nav_data, names_map, top_n, holding_days, momentum_config, nifty_data)
 
     with tab_mom:
@@ -682,7 +684,7 @@ def main():
             col_c6, col_c7, col_c8 = st.columns(3)
             w_alpha = col_c6.slider("Alpha Weight", 0, 100, 20, 10, key="s_alpha")
             w_treynor = col_c7.slider("Treynor Weight", 0, 100, 0, 10, key="s_treynor")
-            w_beta = col_c8.slider("Beta Weight (LOWER is BETTER)", 0, 100, 10, 10, key="s_beta") # Lower Beta is often preferred
+            w_beta = col_c8.slider("Beta Weight (LOWER is BETTER)", 0, 100, 10, 10, key="s_beta")
 
             st.markdown("##### Pure Risk Metrics (LOWER is BETTER)")
             col_c9, col_c10 = st.columns(2)
@@ -706,7 +708,6 @@ def main():
                 st.session_state['custom_weights'] = weights
         
         if st.session_state.get('custom_run'):
-            # Pass custom weights and all context arguments
             display_strategy_results('custom', st.session_state['custom_weights'], *context_args)
 
 if __name__ == "__main__":
