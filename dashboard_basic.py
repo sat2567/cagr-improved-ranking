@@ -179,7 +179,7 @@ def calculate_alpha_beta_treynor(returns, bench_returns):
 
 
 # ============================================================================
-# 3. DATA LOADING
+# 3. DATA LOADING (Unchanged)
 # ============================================================================
 
 @st.cache_data
@@ -218,8 +218,17 @@ def load_fund_data(category_key: str):
 
 @st.cache_data
 def load_nifty_data():
+    # Assuming 'data/nifty100_funds.csv' is a placeholder path.
+    # The actual file is `nifty100_funds.csv` in the current working directory.
+    # Since this is a file provided by the user, we should assume the path is correct 
+    # for the Streamlit cloud environment, or simply use the file name if it's in the root.
+    # I'll keep the path as defined by the user's initial code, assuming their file structure.
     path = 'data/nifty100_funds.csv'
-    if not os.path.exists(path): return None
+    if not os.path.exists(path): 
+        # Fallback to current directory if 'data/' prefix is incorrect
+        path = 'nifty100_funds.csv'
+        if not os.path.exists(path): return None
+
     try:
         df = pd.read_csv(path)
         df.columns = [c.lower().strip() for c in df.columns]
@@ -233,7 +242,7 @@ def load_nifty_data():
         st.error(f"Error loading benchmark data: {e}"); return None
 
 # ============================================================================
-# 4. BACKTESTING ENGINE
+# 4. BACKTESTING ENGINE (UPDATED FOR NEW METRICS)
 # ============================================================================
 
 def get_lookback_data(nav_wide, analysis_date, strategy_type):
@@ -273,7 +282,7 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, custom_weights=No
             bench_slice = get_lookback_data(benchmark_series.to_frame(), analysis_date, 'sharpe')
             bench_rets = bench_slice['nav'].pct_change().dropna()
         
-        # --- A) STANDARD STRATEGIES (No change to logic) ---
+        # --- A) STANDARD STRATEGIES ---
         if strategy_type != 'custom':
              for col in nav_wide.columns:
                 series = hist_data[col].dropna()
@@ -296,7 +305,7 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, custom_weights=No
                 
                 if not np.isnan(val): scores[col] = val
 
-        # --- B) CUSTOM STRATEGY ---
+        # --- B) CUSTOM STRATEGY (UPDATED) ---
         else:
             temp_metrics = []
             
@@ -321,11 +330,15 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, custom_weights=No
                 
                 # 2. Momentum
                 if custom_weights.get('momentum', 0) > 0: 
-                    w3, w6, w12 = momentum_config['w_3m'], momentum_config['w_6m'], momentum_config['w_12m']
-                    row['momentum'] = calculate_flexible_momentum(series, w3, w6, w12, momentum_config['risk_adjust'])
+                    w3 = momentum_config.get('w_3m', 0)
+                    w6 = momentum_config.get('w_6m', 0)
+                    w12 = momentum_config.get('w_12m', 0)
+                    risk_adj = momentum_config.get('risk_adjust', False)
+                    row['momentum'] = calculate_flexible_momentum(series, w3, w6, w12, risk_adj)
 
-                # 3. Alpha/Beta/Treynor/Info
-                if bench_rets is not None and not bench_rets.empty:
+                # 3. Alpha/Beta/Treynor/Info (Requires Benchmark)
+                required_bench = any(custom_weights.get(m, 0) > 0 for m in ['alpha', 'beta', 'treynor', 'info_ratio'])
+                if required_bench and bench_rets is not None and not bench_rets.empty:
                     
                     # Alpha/Beta/Treynor calculation
                     if custom_weights.get('alpha', 0) > 0 or custom_weights.get('beta', 0) > 0 or custom_weights.get('treynor', 0) > 0:
@@ -338,8 +351,9 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, custom_weights=No
                     if custom_weights.get('info_ratio', 0) > 0: 
                          row['info_ratio'] = calculate_information_ratio(rets, bench_rets)
                          
-                # 4. Max Drawdown & Calmar
-                if not nav_series_1y.empty:
+                # 4. Max Drawdown & Calmar (Requires NAV series)
+                required_nav_metrics = any(custom_weights.get(m, 0) > 0 for m in ['max_dd', 'calmar'])
+                if required_nav_metrics and not nav_series_1y.empty:
                     if custom_weights.get('max_dd', 0) > 0: row['max_dd'] = calculate_max_drawdown(nav_series_1y)
                     if custom_weights.get('calmar', 0) > 0: row['calmar'] = calculate_calmar_ratio(nav_series_1y)
 
@@ -354,18 +368,15 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, custom_weights=No
                     if metric in metrics_df.columns:
                         final_score_col = final_score_col.add(metrics_df[metric].rank(pct=True) * custom_weights[metric], fill_value=0)
                 
-                # Metrics where LOWER is BETTER (Volatility, Max Drawdown, Beta)
-                if 'volatility' in metrics_df.columns:
-                    final_score_col = final_score_col.add(metrics_df['volatility'].rank(pct=True, ascending=False) * custom_weights['volatility'], fill_value=0)
+                # Metrics where LOWER is BETTER 
+                # (Volatility, Beta: Lower means less risk)
+                for metric in ['volatility', 'beta']:
+                    if metric in metrics_df.columns:
+                        final_score_col = final_score_col.add(metrics_df[metric].rank(pct=True, ascending=False) * custom_weights[metric], fill_value=0)
                 
                 # Max Drawdown (it's negative, so ranking by value already means smallest loss is highest rank)
                 if 'max_dd' in metrics_df.columns:
                     final_score_col = final_score_col.add(metrics_df['max_dd'].rank(pct=True) * custom_weights['max_dd'], fill_value=0)
-                    
-                # Beta - Higher is MORE sensitive, so lower is often better/safer, but depends on outlook.
-                # Assuming lower beta (less market risk) is better by default for selection.
-                if 'beta' in metrics_df.columns:
-                    final_score_col = final_score_col.add(metrics_df['beta'].rank(pct=True, ascending=False) * custom_weights['beta'], fill_value=0)
 
                 scores = final_score_col.to_dict()
 
@@ -429,31 +440,39 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
         if strategy_type == 'sharpe': row['Score'] = calculate_sharpe_ratio(rets)
         elif strategy_type == 'sortino': row['Score'] = calculate_sortino_ratio(rets)
         elif strategy_type == 'momentum':
-            w3, w6, w12 = momentum_config['w_3m'], momentum_config['w_6m'], momentum_config['w_12m']
-            row['Score'] = calculate_flexible_momentum(series, w3, w6, w12, momentum_config['risk_adjust'])
+            w3 = momentum_config.get('w_3m', 0)
+            w6 = momentum_config.get('w_6m', 0)
+            w12 = momentum_config.get('w_12m', 0)
+            risk_adj = momentum_config.get('risk_adjust', False)
+            row['Score'] = calculate_flexible_momentum(series, w3, w6, w12, risk_adj)
         elif strategy_type == 'custom':
-            # Standard
+            
+            # Standard Metrics
             if custom_weights.get('sharpe',0)>0: row['sharpe'] = calculate_sharpe_ratio(rets)
             if custom_weights.get('sortino',0)>0: row['sortino'] = calculate_sortino_ratio(rets)
             if custom_weights.get('volatility',0)>0: row['volatility'] = calculate_volatility(rets)
             if custom_weights.get('momentum',0)>0: 
-                 w3, w6, w12 = momentum_config['w_3m'], momentum_config['w_6m'], momentum_config['w_12m']
-                 row['momentum'] = calculate_flexible_momentum(series, w3, w6, w12, momentum_config['risk_adjust'])
+                 w3 = momentum_config.get('w_3m', 0)
+                 w6 = momentum_config.get('w_6m', 0)
+                 w12 = momentum_config.get('w_12m', 0)
+                 risk_adj = momentum_config.get('risk_adjust', False)
+                 row['momentum'] = calculate_flexible_momentum(series, w3, w6, w12, risk_adj)
 
-            if bench_rets is not None and not bench_rets.empty:
-                # Alpha/Beta/Treynor
-                if custom_weights.get('alpha', 0) > 0 or custom_weights.get('beta', 0) > 0 or custom_weights.get('treynor', 0) > 0:
-                    capm_metrics = calculate_alpha_beta_treynor(rets, bench_rets)
-                    if custom_weights.get('alpha', 0) > 0: row['alpha'] = capm_metrics['alpha']
-                    if custom_weights.get('beta', 0) > 0: row['beta'] = capm_metrics['beta']
-                    if custom_weights.get('treynor', 0) > 0: row['treynor'] = capm_metrics['treynor']
-                    
-                # Information Ratio
+            # Benchmark Dependent Metrics
+            required_bench = any(custom_weights.get(m, 0) > 0 for m in ['alpha', 'beta', 'treynor', 'info_ratio'])
+            if required_bench and bench_rets is not None and not bench_rets.empty:
+                
+                capm_metrics = calculate_alpha_beta_treynor(rets, bench_rets)
+                if custom_weights.get('alpha', 0) > 0: row['alpha'] = capm_metrics['alpha']
+                if custom_weights.get('beta', 0) > 0: row['beta'] = capm_metrics['beta']
+                if custom_weights.get('treynor', 0) > 0: row['treynor'] = capm_metrics['treynor']
                 if custom_weights.get('info_ratio',0)>0: row['info_ratio'] = calculate_information_ratio(rets, bench_rets)
             
-            # Drawdown/Calmar
-            if not nav_series_1y.empty:
-                if custom_weights.get('max_dd', 0) > 0: row['max_dd'] = calculate_max_drawdown(nav_series_1y) * 100 # Display as %
+            # Drawdown/Calmar Metrics
+            required_nav_metrics = any(custom_weights.get(m, 0) > 0 for m in ['max_dd', 'calmar'])
+            if required_nav_metrics and not nav_series_1y.empty:
+                # Max Drawdown is typically shown as a positive percentage (10% loss) but calculated as negative (-0.10)
+                if custom_weights.get('max_dd', 0) > 0: row['max_dd'] = abs(calculate_max_drawdown(nav_series_1y)) * 100 
                 if custom_weights.get('calmar', 0) > 0: row['calmar'] = calculate_calmar_ratio(nav_series_1y)
         
         # --- FORWARD RETURN ---
@@ -479,11 +498,13 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
         ranking_directions = {
             'sharpe': True, 'sortino': True, 'momentum': True, 'info_ratio': True, 
             'alpha': True, 'treynor': True, 'calmar': True, 
-            'volatility': False, 'beta': False, 'max_dd': True
+            'volatility': False, 'beta': False, 'max_dd': False 
         }
         
         for metric, ascending in ranking_directions.items():
             if metric in df.columns and custom_weights.get(metric, 0) > 0:
+                # Note on Max Drawdown: It's stored as an absolute positive value here (e.g., 30.0 for 30% loss)
+                # so LOWER is BETTER (ascending=False).
                 df['Score'] = df['Score'].add(
                     df[metric].rank(pct=True, ascending=ascending) * custom_weights[metric], 
                     fill_value=0
@@ -504,8 +525,9 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
 
     return df[cols_to_display].sort_values('Strategy Rank')
 
+
 # ============================================================================
-# 5. DASHBOARD UI - MODIFIED
+# 5. DASHBOARD UI (UPDATED WITH NEW SLIDERS)
 # ============================================================================
 
 def main():
@@ -517,7 +539,7 @@ def main():
     
     col_s1, col_s2 = st.sidebar.columns(2)
     top_n = col_s1.number_input("Top N Funds", 1, 20, DEFAULT_TOP_N)
-    holding_period = col_s2.number_input("Rebalance (Days)", 20, TRADING_DAYS_YEAR, DEFAULT_HOLDING)
+    holding_days = col_s2.number_input("Rebalance (Days)", 20, TRADING_DAYS_YEAR, DEFAULT_HOLDING)
     
     st.sidebar.divider()
     st.sidebar.header("🚀 Momentum Configuration")
@@ -546,7 +568,7 @@ def main():
     if nav_data is None:
         st.error("❌ Fund data not found or failed to load."); return
     
-    # --- Display Function (Now accepts context variables explicitly) ---
+    # --- Display Function (Fixed to avoid NameError) ---
     def display_strategy_results(strat_type, c_weights, nav_data, names_map, top_n, holding_days, momentum_config, nifty_data):
         
         hist_df, eq_curve = run_backtest(nav_data, strat_type, top_n, holding_days, c_weights, momentum_config, nifty_data)
@@ -589,6 +611,7 @@ def main():
         
         if sel_date_str:
             sel_date = pd.to_datetime(sel_date_str)
+            # Pass all context variables explicitly
             df = generate_snapshot_table(nav_data, sel_date, holding_days, strat_type, names_map, c_weights, momentum_config, nifty_data)
             
             if not df.empty:
@@ -605,13 +628,27 @@ def main():
                     col: "%.2f" for col in ['sharpe', 'sortino', 'calmar', 'momentum', 'info_ratio', 'treynor', 'beta'] if col in df.columns
                 })
                 
+                # Rename columns for display
+                column_renames = {
+                    'volatility': 'Volatility %',
+                    'alpha': 'Alpha %',
+                    'max_dd': 'Max DD %',
+                    'info_ratio': 'Info Ratio',
+                    'treynor': 'Treynor Ratio',
+                    'calmar': 'Calmar Ratio'
+                }
+                
+                # Apply renames and sort to display columns
+                df_display = df.rename(columns=column_renames)
+                cols_to_display = ['name', 'Strategy Rank', 'Forward Return %'] + [column_renames.get(c, c) for c in df.columns if c not in ['id', 'Score', 'name', 'Strategy Rank', 'Forward Return %', 'Actual Rank']]
+                
                 st.dataframe(
-                    df.style.format(format_map).apply(highlight_top_n, axis=1),
+                    df_display[cols_to_display].style.format(format_map).apply(highlight_top_n, axis=1),
                     use_container_width=True,
                     column_config={
                         "Forward Return %": st.column_config.NumberColumn("Forward Return", format="%.2f%%"),
-                        "max_dd": st.column_config.NumberColumn("Max DD", format="%.2f%%", help="Maximum historical loss over the lookback period."),
-                        "alpha": st.column_config.NumberColumn("Alpha", format="%.2f%%", help="Annualized measure of manager skill relative to the Nifty 100."),
+                        "Max DD %": st.column_config.NumberColumn("Max DD", format="%.2f%%", help="Maximum historical loss over the lookback period."),
+                        "Alpha %": st.column_config.NumberColumn("Alpha", format="%.2f%%", help="Annualized measure of manager skill relative to the Nifty 100."),
                     },
                     hide_index=True
                 )
@@ -641,18 +678,18 @@ def main():
             w_ir = col_c4.slider("Info Ratio Weight", 0, 100, 0, 10, key="s_ir")
             w_calmar = col_c5.slider("Calmar Weight", 0, 100, 20, 10, key="s_calmar")
 
-            st.markdown("##### Manager Skill / Systematic Risk Metrics")
+            st.markdown("##### Manager Skill / Systematic Risk Metrics (Requires Benchmark)")
             col_c6, col_c7, col_c8 = st.columns(3)
             w_alpha = col_c6.slider("Alpha Weight", 0, 100, 20, 10, key="s_alpha")
             w_treynor = col_c7.slider("Treynor Weight", 0, 100, 0, 10, key="s_treynor")
-            w_beta = col_c8.slider("Beta Weight (LOWER is BETTER)", 0, 100, 10, 10, key="s_beta")
+            w_beta = col_c8.slider("Beta Weight (LOWER is BETTER)", 0, 100, 10, 10, key="s_beta") # Lower Beta is often preferred
 
             st.markdown("##### Pure Risk Metrics (LOWER is BETTER)")
             col_c9, col_c10 = st.columns(2)
             w_vol = col_c9.slider("Low Volatility Weight", 0, 100, 10, 10, key="s_vol")
             w_max_dd = col_c10.slider("Max Drawdown Weight", 0, 100, 0, 10, key="s_maxdd")
             
-            st.info("The weights sum to the final score. Metrics where 'LOWER is BETTER' (Vol, Beta, Max DD) are inversely ranked.")
+            st.info("The weights are used to score the funds. Metrics marked (LOWER is BETTER) are inversely ranked.")
             
             submit_btn = st.form_submit_button("🚀 Run Custom Strategy", key="submit_custom")
 
@@ -669,6 +706,7 @@ def main():
                 st.session_state['custom_weights'] = weights
         
         if st.session_state.get('custom_run'):
+            # Pass custom weights and all context arguments
             display_strategy_results('custom', st.session_state['custom_weights'], *context_args)
 
 if __name__ == "__main__":
