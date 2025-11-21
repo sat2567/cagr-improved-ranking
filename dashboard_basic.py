@@ -75,21 +75,19 @@ def calculate_information_ratio(fund_returns, bench_returns):
 def calculate_flexible_momentum(series, w_3m, w_6m, w_12m, use_risk_adjust=False):
     """
     Calculates a composite momentum score based on user-defined weights.
-    IMPROVED: Uses a 5-day moving average for prices to reduce noise.
+    Uses a 5-day moving average for prices to reduce noise.
     """
     if len(series) < 70: return np.nan 
     
-    # Smooth the series (5-day simple moving average) to avoid single-day outliers
+    # Smooth the series (5-day simple moving average)
     smoothed = series.rolling(window=5).mean()
     
-    # Get the last available smoothed price
     if pd.isna(smoothed.iloc[-1]): return np.nan
     price_cur = smoothed.iloc[-1]
     current_date = series.index[-1]
     
     def get_past_price(days_ago):
         target_date = current_date - pd.Timedelta(days=days_ago)
-        # Find data up to target date
         sub_series = smoothed[smoothed.index <= target_date]
         if sub_series.empty: return np.nan
         return sub_series.iloc[-1]
@@ -125,7 +123,7 @@ def calculate_flexible_momentum(series, w_3m, w_6m, w_12m, use_risk_adjust=False
     return raw_score
 
 def calculate_max_drawdown(series):
-    """Returns Max Drawdown (Negative value: -0.30 for 30% loss)"""
+    """Returns Max Drawdown (Negative value)"""
     if len(series) < 10: return np.nan
     peak = series.expanding(min_periods=1).max()
     drawdown = (series - peak) / peak
@@ -141,13 +139,12 @@ def calculate_cagr(series):
     return (end_val / start_val)**(365.25 / days) - 1
 
 def calculate_calmar_ratio(series):
-    """Returns Calmar Ratio (Higher is Better)"""
+    """Returns Calmar Ratio"""
     cagr = calculate_cagr(series)
     max_dd = calculate_max_drawdown(series)
     
-    # IMPROVED: Handle Zero Drawdown or NaN cases
     if np.isnan(cagr) or np.isnan(max_dd): return np.nan
-    if max_dd == 0: return np.nan # Cannot divide by zero (perfect fund?)
+    if max_dd == 0: return np.nan 
     
     return cagr / abs(max_dd) 
 
@@ -159,21 +156,17 @@ def calculate_alpha_beta_treynor(returns, bench_returns, daily_rf_rate, annual_r
     r_p = returns.loc[common_idx]
     r_m = bench_returns.loc[common_idx]
     
-    # Excess Returns
     r_p_excess = r_p - daily_rf_rate
     r_m_excess = r_m - daily_rf_rate
     
-    # 1. Beta
     cov_pm = r_p.cov(r_m)
     var_m = r_m.var()
     if var_m == 0: beta = np.nan
     else: beta = cov_pm / var_m
     
-    # 2. Alpha (Annualized)
     expected_excess_return = beta * r_m_excess.mean()
     alpha = (r_p_excess.mean() - expected_excess_return) * TRADING_DAYS_YEAR
 
-    # 3. Treynor Ratio
     annual_return = r_p.mean() * TRADING_DAYS_YEAR
     if np.isnan(beta) or beta == 0: treynor = np.nan
     else: treynor = (annual_return - annual_rf_rate) / beta
@@ -268,7 +261,6 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, config, custom_we
         hist_data = get_lookback_data(nav_wide, analysis_date)
         scores = {}
         
-        # Benchmark Returns
         bench_rets = None
         if benchmark_series is not None:
             bench_slice = get_lookback_data(benchmark_series.to_frame(), analysis_date)
@@ -343,7 +335,7 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, config, custom_we
                         final_score_col = final_score_col.add(metrics_df[metric].rank(pct=True, ascending=False) * custom_weights[metric], fill_value=0)
                 
                 if 'max_dd' in metrics_df.columns:
-                    # max_dd is negative (e.g., -0.20), so larger value (-0.10) is better. Standard rank(ascending=True) works.
+                    # max_dd is negative, higher value (closer to 0) is better
                     final_score_col = final_score_col.add(metrics_df['max_dd'].rank(pct=True) * custom_weights['max_dd'], fill_value=0)
 
                 scores = final_score_col.to_dict()
@@ -358,7 +350,6 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, config, custom_we
         entry_date = nav_wide.index[entry_idx]
         exit_date = nav_wide.index[exit_idx]
         
-        # Returns
         period_rets = (nav_wide.iloc[exit_idx] / nav_wide.iloc[entry_idx]) - 1
         valid_rets = period_rets[selected].dropna()
         avg_ret = valid_rets.mean() if not valid_rets.empty else 0.0
@@ -447,7 +438,8 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
     df = pd.DataFrame(temp_data)
     if df.empty: return df
 
-    # Define metrics and direction OUTSIDE the conditional block to prevent UnboundLocalError
+    # --- UPDATED RANKING LOGIC ---
+    # Defined outside to be available for both Custom and Standard display logic
     ranking_directions = {
         'sharpe': True, 'sortino': True, 'momentum': True, 'info_ratio': True, 
         'alpha': True, 'treynor': True, 'calmar': True, 
@@ -462,23 +454,28 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
                     df[metric].rank(pct=True, ascending=ascending) * custom_weights[metric], 
                     fill_value=0
                 )
-                
+    
     if 'Score' in df.columns:
         df['Strategy Rank'] = df['Score'].rank(ascending=False, method='min')
     else:
         df['Strategy Rank'] = np.nan
     
     if has_future:
-        df['Actual Rank'] = df['Forward Return %'].rank(ascending=False, method='min')
+        # Rename to 'Forward Rank' for display clarity
+        df['Forward Rank'] = df['Forward Return %'].rank(ascending=False, method='min')
     
-    cols_to_display = ['name', 'Strategy Rank', 'Forward Return %']
+    # --- DISPLAY COLUMNS ---
+    cols_to_display = ['name', 'Strategy Rank', 'Forward Rank', 'Forward Return %']
+    
     if strategy_type == 'custom':
+        # Add only the metrics that were requested in custom weights
         for metric in ranking_directions.keys():
             if metric in df.columns: cols_to_display.append(metric)
-    elif 'Score' in df.columns:
-        cols_to_display.append('Score')
+    # Note: We intentionally DO NOT append 'Score' here to keep the table clean
 
+    # Filter to ensure columns exist
     final_cols = [c for c in cols_to_display if c in df.columns]
+    
     return df[final_cols].sort_values('Strategy Rank')
 
 # ============================================================================
@@ -498,7 +495,6 @@ def main():
     
     rf_annual = st.sidebar.number_input("Risk Free Rate (%)", 0.0, 15.0, DEFAULT_RISK_FREE*100, 0.5) / 100
     
-    # Prepare config dict
     rf_daily = (1 + rf_annual) ** (1/TRADING_DAYS_YEAR) - 1
     config = {'daily_rf': rf_daily, 'annual_rf': rf_annual}
 
@@ -521,6 +517,7 @@ def main():
         'risk_adjust': risk_adjust_mom
     }
     
+    # --- Load Data ---
     with st.spinner("Loading Data..."):
         nav_data, names_map = load_fund_data(cat_key)
         nifty_data = load_nifty_data()
