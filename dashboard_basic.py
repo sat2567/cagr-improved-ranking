@@ -479,9 +479,7 @@ def main():
     rf_daily = (1 + rf_annual) ** (1/TRADING_DAYS_YEAR) - 1
     config = {'daily_rf': rf_daily, 'annual_rf': rf_annual}
 
-    st.sidebar.divider()
-    st.sidebar.warning("⚠️ Note: Ensure your data includes delisted funds to avoid Survivorship Bias.")
-    st.sidebar.divider()
+  
     
     st.sidebar.header("🚀 Momentum Configuration")
     mom_c1, mom_c2, mom_c3 = st.sidebar.columns(3)
