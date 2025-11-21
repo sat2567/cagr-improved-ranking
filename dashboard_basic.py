@@ -548,7 +548,7 @@ def main():
             
             if not df.empty:
                 def highlight_top_n(row):
-                    if row['Strategy Rank'] <= top_n: return ['background-color: #e6fffa'] * len(row)
+                    if row['Strategy Rank'] <= top_n: return ['background-color: green'] * len(row)
                     return [''] * len(row)
                 
                 # Format numbers using column_config instead of style for better interaction
