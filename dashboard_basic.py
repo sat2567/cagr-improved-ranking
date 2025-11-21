@@ -617,7 +617,7 @@ def main():
                 def highlight_top_n(row):
                     if row['Strategy Rank'] <= top_n:
                         # Highlight selected funds in a light green
-                        return ['background-color: #e6fffa'] * len(row) 
+                        return ['background-color: green'] * len(row) 
                     return [''] * len(row)
                 
                 # Format map for cleaner display
