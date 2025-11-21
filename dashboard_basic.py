@@ -5,7 +5,6 @@ import os
 import warnings
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import re # Added for keyword matching in chatbot
 
 warnings.filterwarnings('ignore')
 
@@ -37,144 +36,7 @@ CATEGORY_MAP = {
 }
 
 # ============================================================================
-# 2. CHATBOT KNOWLEDGE BASE
-# ============================================================================
-
-KNOWLEDGE_BASE = {
-    "sharpe": """
-    **Sharpe Ratio** measures risk-adjusted return.
-    
-    *Formula:* `(Excess Return / Total Volatility) * sqrt(252)`
-    
-    *Logic in Code:*
-    1. We subtract the daily Risk-Free Rate from the fund's daily returns.
-    2. We calculate the standard deviation (volatility) of these returns.
-    3. We annualize the result.
-    
-    *Goal:* Higher is better. It shows how much return you get for every unit of total risk taken.
-    """,
-    
-    "sortino": """
-    **Sortino Ratio** is like Sharpe, but it only penalizes "bad" volatility.
-    
-    *Formula:* `(Excess Return / Downside Deviation) * sqrt(252)`
-    
-    *Logic in Code:*
-    1. We calculate excess returns just like Sharpe.
-    2. But for risk, we filter the data to keep ONLY the days where returns were negative.
-    3. We calculate the standard deviation of these negative days (Downside Deviation).
-    
-    *Goal:* Higher is better. Ideal for volatile funds where upside spikes shouldn't be punished.
-    """,
-    
-    "momentum": """
-    **Momentum** identifies funds that are currently trending upwards.
-    
-    *Logic in Code:*
-    1. **Smoothing:** We take a 5-day moving average of prices to avoid single-day outliers (flash crashes).
-    2. **Returns:** We calculate returns for 3 months, 6 months, and 1 year from the smoothed prices.
-    3. **Composite:** We multiply these returns by the weights you set in the sidebar (e.g., 0.4 * 3M + 0.6 * 1Y).
-    4. **Risk Adj:** If enabled, we divide the final score by the fund's volatility to penalize choppy trends.
-    """,
-    
-    "calmar": """
-    **Calmar Ratio** measures return relative to tail risk (Drawdown).
-    
-    *Formula:* `Annual CAGR / Absolute Max Drawdown`
-    
-    *Logic in Code:*
-    1. Calculates the Compound Annual Growth Rate (CAGR).
-    2. Calculates the Maximum Drawdown (worst historical drop).
-    3. Returns the ratio. *Note: If Max Drawdown is 0 (impossible in reality), it returns NaN.*
-    
-    *Goal:* Higher is better. Shows how much return you get for the risk of a major crash.
-    """,
-    
-    "drawdown": """
-    **Maximum Drawdown (MaxDD)** is the worst loss an investor could have suffered.
-    
-    *Logic in Code:*
-    1. Tracks the "Peak" price seen so far for every day in the history.
-    2. Calculates the % drop from that Peak for every subsequent day.
-    3. Finds the single largest negative % in the entire period.
-    
-    *Goal:* Lower (closer to 0%) is better.
-    """,
-    
-    "alpha": """
-    **Jensen's Alpha** measures Manager Skill.
-    
-    *Logic in Code:*
-    1. Calculates the fund's Beta relative to the Benchmark (Nifty 100).
-    2. Uses CAPM to find the "Expected Return" given that Beta.
-    3. **Alpha = Actual Return - Expected Return.**
-    
-    *Goal:* Positive Alpha means the manager beat the market through stock selection. Negative means they underperformed their risk level.
-    """,
-    
-    "beta": """
-    **Beta** measures systematic (market) risk.
-    
-    *Logic in Code:* `Covariance(Fund, Market) / Variance(Market)`
-    
-    *Interpretation:*
-    * **Beta = 1.0:** Fund moves exactly like the Nifty 100.
-    * **Beta > 1.0:** Aggressive. If market goes up 10%, fund might go up 15% (or crash 15%).
-    * **Beta < 1.0:** Defensive. Fund is less volatile than the market.
-    """,
-    
-    "treynor": """
-    **Treynor Ratio** measures return per unit of Market Risk (Beta).
-    
-    *Formula:* `(Annual Return - Risk Free Rate) / Beta`
-    
-    *Difference from Sharpe:* Sharpe uses Total Risk (Volatility). Treynor uses only Systematic Risk (Beta). It assumes you are diversified and don't care about unsystematic risk.
-    """,
-    
-    "info": """
-    **Information Ratio (IR)** measures consistency of outperformance.
-    
-    *Formula:* `Average Active Return / Tracking Error`
-    
-    *Logic in Code:*
-    1. Active Return = Fund Daily Return - Benchmark Daily Return.
-    2. Tracking Error = Standard Deviation of Active Returns.
-    
-    *Goal:* High IR means the fund beats the benchmark consistently, not just by luck.
-    """,
-    
-    "volatility": """
-    **Volatility** is the annualized Standard Deviation.
-    
-    *Formula:* `Daily Std Dev * sqrt(252)`
-    
-    *Meaning:* It quantifies uncertainty. A high volatility means the price swings wildly (high risk). A low volatility means a smooth equity curve.
-    """
-}
-
-def get_bot_response(query):
-    """Simple keyword matching to find definitions."""
-    query = query.lower()
-    
-    # Check for greeting
-    if any(x in query for x in ['hi', 'hello', 'hey']):
-        return "Hello! I am your Fund Analyst AI. Ask me about any metric (e.g., 'How is Alpha calculated?' or 'What is Momentum?')."
-        
-    # Check keywords in Knowledge Base
-    for key, explanation in KNOWLEDGE_BASE.items():
-        if key in query:
-            return explanation
-            
-    # Specific aliases
-    if "std" in query or "risk" in query: return KNOWLEDGE_BASE["volatility"]
-    if "cagr" in query or "return" in query: return "I use **CAGR (Compound Annual Growth Rate)** for the final metrics. Formula: `(End Value / Start Value)^(1/Years) - 1`. This accounts for compounding, unlike a simple average."
-    if "ir" in query: return KNOWLEDGE_BASE["info"]
-    if "dd" in query: return KNOWLEDGE_BASE["drawdown"]
-    
-    return "I'm not sure about that specific term. Try asking about: Sharpe, Sortino, Momentum, Alpha, Beta, Drawdown, or Volatility."
-
-# ============================================================================
-# 3. HELPER FUNCTIONS (MATH)
+# 2. HELPER FUNCTIONS (MATH)
 # ============================================================================
 
 def calculate_sharpe_ratio(returns, daily_rf_rate):
@@ -211,15 +73,10 @@ def calculate_information_ratio(fund_returns, bench_returns):
     return (active_return.mean() * TRADING_DAYS_YEAR) / tracking_error
 
 def calculate_flexible_momentum(series, w_3m, w_6m, w_12m, use_risk_adjust=False):
-    """
-    Calculates a composite momentum score based on user-defined weights.
-    Uses a 5-day moving average for prices to reduce noise.
-    """
+    """Calculates a composite momentum score."""
     if len(series) < 70: return np.nan 
     
-    # Smooth the series (5-day simple moving average)
     smoothed = series.rolling(window=5).mean()
-    
     if pd.isna(smoothed.iloc[-1]): return np.nan
     price_cur = smoothed.iloc[-1]
     current_date = series.index[-1]
@@ -253,7 +110,6 @@ def calculate_flexible_momentum(series, w_3m, w_6m, w_12m, use_risk_adjust=False
         date_1y_ago = current_date - pd.Timedelta(days=365)
         hist_vol_data = series[series.index >= date_1y_ago]
         if len(hist_vol_data) < 20: return np.nan
-        
         vol = hist_vol_data.pct_change().dropna().std() * np.sqrt(TRADING_DAYS_YEAR)
         if vol == 0: return np.nan
         return raw_score / vol
@@ -261,14 +117,12 @@ def calculate_flexible_momentum(series, w_3m, w_6m, w_12m, use_risk_adjust=False
     return raw_score
 
 def calculate_max_drawdown(series):
-    """Returns Max Drawdown (Negative value)"""
     if len(series) < 10: return np.nan
     peak = series.expanding(min_periods=1).max()
     drawdown = (series - peak) / peak
     return drawdown.min()
 
 def calculate_cagr(series):
-    """Returns CAGR from a NAV series"""
     if len(series) < 2: return np.nan
     start_val = series.iloc[0]
     end_val = series.iloc[-1]
@@ -277,23 +131,18 @@ def calculate_cagr(series):
     return (end_val / start_val)**(365.25 / days) - 1
 
 def calculate_calmar_ratio(series):
-    """Returns Calmar Ratio"""
     cagr = calculate_cagr(series)
     max_dd = calculate_max_drawdown(series)
-    
     if np.isnan(cagr) or np.isnan(max_dd): return np.nan
     if max_dd == 0: return np.nan 
-    
     return cagr / abs(max_dd) 
 
 def calculate_alpha_beta_treynor(returns, bench_returns, daily_rf_rate, annual_rf_rate):
-    """Calculates Beta, Annualized Alpha, and Treynor Ratio"""
     common_idx = returns.index.intersection(bench_returns.index)
     if len(common_idx) < 50: return {'alpha': np.nan, 'beta': np.nan, 'treynor': np.nan}
     
     r_p = returns.loc[common_idx]
     r_m = bench_returns.loc[common_idx]
-    
     r_p_excess = r_p - daily_rf_rate
     r_m_excess = r_m - daily_rf_rate
     
@@ -311,9 +160,8 @@ def calculate_alpha_beta_treynor(returns, bench_returns, daily_rf_rate, annual_r
     
     return {'alpha': alpha, 'beta': beta, 'treynor': treynor}
 
-
 # ============================================================================
-# 4. DATA LOADING
+# 3. DATA LOADING
 # ============================================================================
 
 @st.cache_data
@@ -333,7 +181,6 @@ def load_fund_data(category_key: str):
         df = pd.read_csv(path)
         df.columns = [c.lower().strip() for c in df.columns]
         if 'scheme_code' in df.columns: df['scheme_code'] = df['scheme_code'].astype(str)
-        
         df['date'] = pd.to_datetime(df['date'], errors='coerce', infer_datetime_format=True)
         df['nav'] = pd.to_numeric(df['nav'], errors='coerce')
         df = df.dropna(subset=['date', 'nav']) 
@@ -356,7 +203,6 @@ def load_nifty_data():
         df = pd.read_csv(path)
         df.columns = [c.lower().strip() for c in df.columns]
         if 'close' in df.columns: df = df.rename(columns={'close': 'nav'})
-        
         df['date'] = pd.to_datetime(df['date'], errors='coerce', infer_datetime_format=True)
         df['nav'] = pd.to_numeric(df['nav'], errors='coerce')
         df = df.dropna(subset=['date', 'nav'])
@@ -365,7 +211,7 @@ def load_nifty_data():
         st.error(f"Error loading benchmark data: {e}"); return None
 
 # ============================================================================
-# 5. BACKTESTING ENGINE
+# 4. BACKTESTING ENGINE
 # ============================================================================
 
 def get_lookback_data(nav_wide, analysis_date):
@@ -485,6 +331,9 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, config, custom_we
         exit_idx = entry_idx + holding_days
         if exit_idx >= len(nav_wide): break
         
+        entry_date = nav_wide.index[entry_idx]
+        exit_date = nav_wide.index[exit_idx]  # --- FIXED: Added explicit exit_date definition
+        
         period_rets = (nav_wide.iloc[exit_idx] / nav_wide.iloc[entry_idx]) - 1
         valid_rets = period_rets[selected].dropna()
         avg_ret = valid_rets.mean() if not valid_rets.empty else 0.0
@@ -587,7 +436,7 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
                     df[metric].rank(pct=True, ascending=ascending) * custom_weights[metric], 
                     fill_value=0
                 )
-                
+    
     if 'Score' in df.columns:
         df['Strategy Rank'] = df['Score'].rank(ascending=False, method='min')
     else:
@@ -606,7 +455,7 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
     return df[final_cols].sort_values('Strategy Rank')
 
 # ============================================================================
-# 6. DASHBOARD UI
+# 5. DASHBOARD UI
 # ============================================================================
 
 def main():
@@ -643,7 +492,6 @@ def main():
         'risk_adjust': risk_adjust_mom
     }
     
-    # --- Load Data ---
     with st.spinner("Loading Data..."):
         nav_data, names_map = load_fund_data(cat_key)
         nifty_data = load_nifty_data()
@@ -698,11 +546,11 @@ def main():
                     return [''] * len(row)
                 
                 format_map = {col: "%.2f%%" for col in ['Forward Return %', 'volatility', 'alpha', 'max_dd'] if col in df.columns}
-                format_map.update({col: "%.2f" for col in ['sharpe', 'sortino', 'calmar', 'momentum', 'info_ratio', 'treynor', 'beta'] if col in df.columns})
+                format_map.update({col: "%.2f" for col in ['Score', 'sharpe', 'sortino', 'calmar', 'momentum', 'info_ratio', 'treynor', 'beta'] if col in df.columns})
                 
                 column_renames = {'volatility': 'Volatility %', 'alpha': 'Alpha %', 'max_dd': 'Max DD %', 'info_ratio': 'Info Ratio', 'treynor': 'Treynor Ratio', 'calmar': 'Calmar Ratio', 'Score': 'Strategy Score'}
                 df_display = df.rename(columns=column_renames)
-                cols_to_display = [c for c in df_display.columns if c not in ['id', 'Score', 'Strategy Score', 'Actual Rank']]
+                cols_to_display = [c for c in df_display.columns if c not in ['id', 'Actual Rank']]
                 
                 st.dataframe(
                     df_display[cols_to_display].style.format(format_map).apply(highlight_top_n, axis=1),
@@ -710,11 +558,11 @@ def main():
                     hide_index=True
                 )
 
-    # --- Tabs ---
-    tab_mom, tab_sharpe, tab_custom, tab_chat = st.tabs(["🚀 Momentum", "⚖️ Sharpe", "🛠️ Custom", "🤖 Ask the Analyst"])
+    tab_mom, tab_sharpe, tab_custom = st.tabs(["🚀 Momentum Strategy", "⚖️ Sharpe Ratio", "🛠️ Custom Strategy"])
     context_args = (nav_data, names_map, top_n, holding_days, config, momentum_config, nifty_data)
 
     with tab_mom:
+        st.info(f"Momentum Weights: 3M={momentum_config['w_3m']:.2f}, 6M={momentum_config['w_6m']:.2f}, 1Y={momentum_config['w_12m']:.2f}. Risk Adjust: {momentum_config['risk_adjust']}")
         display_strategy_results('momentum', None, *context_args)
 
     with tab_sharpe:
@@ -759,29 +607,6 @@ def main():
         
         if st.session_state.get('custom_run'):
             display_strategy_results('custom', st.session_state['custom_weights'], *context_args)
-
-    # --- CHAT TAB ---
-    with tab_chat:
-        st.markdown("### 🤖 Financial Analyst Bot")
-        st.caption("Ask questions about the metrics or logic used in this dashboard.")
-        
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        if prompt := st.chat_input("Ask me anything (e.g., 'How is Sharpe calculated?')..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            response = get_bot_response(prompt)
-            
-            with st.chat_message("assistant"):
-                st.markdown(response)
-            st.session_state.messages.append({"role": "assistant", "content": response})
 
 if __name__ == "__main__":
     if 'custom_run' not in st.session_state:
