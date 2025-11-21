@@ -569,7 +569,7 @@ def main():
             
             if not df.empty:
                 def highlight_top_n(row):
-                    if row['Strategy Rank'] <= top_n: return ['background-color: #e6fffa'] * len(row)
+                    if row['Strategy Rank'] <= top_n: return ['background-color: green'] * len(row)
                     return [''] * len(row)
                 
                 format_map = {col: "%.2f%%" for col in ['Forward Return %', 'volatility', 'alpha', 'max_dd'] if col in df.columns}
