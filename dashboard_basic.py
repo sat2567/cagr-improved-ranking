@@ -56,7 +56,7 @@ def calculate_sortino_ratio(returns, daily_rf_rate):
 def calculate_volatility(returns):
     """Returns Annualized Volatility (Lower is Better)"""
     if len(returns) < 10: return np.nan
-    return returns.std() * np.sqrt(TRADING_DAYS_YEAR)
+    return returns.std() * np.sqrt(TRADING_DAYS_YEAR)*100
 
 def calculate_information_ratio(fund_returns, bench_returns):
     """Returns Information Ratio (Higher is Better)"""
