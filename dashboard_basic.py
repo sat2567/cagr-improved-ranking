@@ -250,7 +250,7 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, config, custom_we
             bench_slice = get_lookback_data(benchmark_series.to_frame(), analysis_date)
             bench_rets = bench_slice['nav'].pct_change().dropna()
         
-        # --- STRATEGY LOGIC ---
+        # --- STANDARD STRATEGY ---
         if strategy_type != 'custom':
              for col in nav_wide.columns:
                 series = hist_data[col].dropna()
@@ -269,7 +269,8 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, config, custom_we
                 
                 if not np.isnan(val): scores[col] = val
 
-        else: # Custom Strategy
+        # --- CUSTOM STRATEGY ---
+        else:
             temp_metrics = []
             for col in nav_wide.columns:
                 series = hist_data[col].dropna()
@@ -321,6 +322,7 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, config, custom_we
                 if 'max_dd' in metrics_df.columns:
                     final_score_col = final_score_col.add(metrics_df['max_dd'].rank(pct=True) * custom_weights['max_dd'], fill_value=0)
 
+                # --- FIX: Explicitly exclude NaNs to match Standard Strategy logic ---
                 raw_scores = final_score_col.to_dict()
                 scores = {k: v for k, v in raw_scores.items() if not pd.isna(v)}
 
@@ -332,7 +334,7 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, config, custom_we
         if exit_idx >= len(nav_wide): break
         
         entry_date = nav_wide.index[entry_idx]
-        exit_date = nav_wide.index[exit_idx]  # --- FIXED: Added explicit exit_date definition
+        exit_date = nav_wide.index[exit_idx]
         
         period_rets = (nav_wide.iloc[exit_idx] / nav_wide.iloc[entry_idx]) - 1
         valid_rets = period_rets[selected].dropna()
@@ -416,12 +418,14 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
             if pd.notnull(p_entry) and pd.notnull(p_exit) and p_entry > 0:
                 raw_ret = (p_exit / p_entry) - 1
 
+        # Keep raw number for correct sorting/filtering
         row['Forward Return %'] = raw_ret * 100 if not np.isnan(raw_ret) else np.nan
         temp_data.append(row)
 
     df = pd.DataFrame(temp_data)
     if df.empty: return df
 
+    # --- RANKING ---
     ranking_directions = {
         'sharpe': True, 'sortino': True, 'momentum': True, 'info_ratio': True, 
         'alpha': True, 'treynor': True, 'calmar': True, 
@@ -443,8 +447,10 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
         df['Strategy Rank'] = np.nan
     
     if has_future:
+        # --- ADDED FORWARD RANK ---
         df['Forward Rank'] = df['Forward Return %'].rank(ascending=False, method='min')
     
+    # --- DISPLAY COLUMNS (Score removed) ---
     cols_to_display = ['name', 'Strategy Rank', 'Forward Rank', 'Forward Return %']
     
     if strategy_type == 'custom':
@@ -473,9 +479,7 @@ def main():
     rf_daily = (1 + rf_annual) ** (1/TRADING_DAYS_YEAR) - 1
     config = {'daily_rf': rf_daily, 'annual_rf': rf_annual}
 
-    st.sidebar.divider()
-    st.sidebar.warning("⚠️ Note: Ensure your data includes delisted funds to avoid Survivorship Bias.")
-    st.sidebar.divider()
+  
     
     st.sidebar.header("🚀 Momentum Configuration")
     mom_c1, mom_c2, mom_c3 = st.sidebar.columns(3)
@@ -542,19 +546,25 @@ def main():
             
             if not df.empty:
                 def highlight_top_n(row):
-                    if row['Strategy Rank'] <= top_n: return ['background-color: #e6fffa'] * len(row)
+                    if row['Strategy Rank'] <= top_n: return ['background-color: green'] * len(row)
                     return [''] * len(row)
                 
-                format_map = {col: "%.2f%%" for col in ['Forward Return %', 'volatility', 'alpha', 'max_dd'] if col in df.columns}
-                format_map.update({col: "%.2f" for col in ['Score', 'sharpe', 'sortino', 'calmar', 'momentum', 'info_ratio', 'treynor', 'beta'] if col in df.columns})
+                # Format numbers using column_config instead of style for better interaction
+                # Only highlight style is applied here
                 
                 column_renames = {'volatility': 'Volatility %', 'alpha': 'Alpha %', 'max_dd': 'Max DD %', 'info_ratio': 'Info Ratio', 'treynor': 'Treynor Ratio', 'calmar': 'Calmar Ratio', 'Score': 'Strategy Score'}
                 df_display = df.rename(columns=column_renames)
-                cols_to_display = [c for c in df_display.columns if c not in ['id', 'Actual Rank']]
+                cols_to_display = [c for c in df_display.columns if c not in ['id', 'Actual Rank', 'Score', 'Strategy Score']]
                 
                 st.dataframe(
-                    df_display[cols_to_display].style.format(format_map).apply(highlight_top_n, axis=1),
+                    df_display[cols_to_display].style.apply(highlight_top_n, axis=1),
                     use_container_width=True,
+                    column_config={
+                        "Forward Return %": st.column_config.NumberColumn("Forward Return", format="%.2f%%"),
+                        "Max DD %": st.column_config.NumberColumn("Max DD", format="%.2f%%"),
+                        "Alpha %": st.column_config.NumberColumn("Alpha", format="%.2f%%"),
+                        "Volatility %": st.column_config.NumberColumn("Volatility", format="%.2f%%"),
+                    },
                     hide_index=True
                 )
 
