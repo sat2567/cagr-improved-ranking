@@ -222,14 +222,23 @@ def get_lookback_data(nav_wide, analysis_date):
     hist_data = hist_data[hist_data.index < analysis_date]
     return hist_data
 
-def run_backtest(nav_wide, strategy_type, top_n, holding_days, config, custom_weights=None, momentum_config=None, benchmark_series=None):
+def run_backtest(nav_wide, strategy_type, top_n, holding_days, config, custom_weights=None, momentum_config=None, benchmark_series=None, start_year=2010):
     
     daily_rf = config['daily_rf']
     annual_rf = config['annual_rf']
 
-    start_date_required = nav_wide.index.min() + pd.Timedelta(days=370)
+    # --- START DATE LOGIC FIXED ---
+    # 1. Minimum calculation date (must have 1 year of data before trading)
+    min_calc_date = nav_wide.index.min() + pd.Timedelta(days=370)
+    
+    # 2. User requested start date
+    user_start_date = pd.to_datetime(f"{start_year}-01-01")
+    
+    # 3. Actual start is the later of the two
+    actual_start_date = max(min_calc_date, user_start_date)
+
     try:
-        start_idx = nav_wide.index.searchsorted(start_date_required)
+        start_idx = nav_wide.index.searchsorted(actual_start_date)
     except:
         start_idx = 0
         
@@ -311,18 +320,23 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, config, custom_we
                 metrics_df = pd.DataFrame(temp_metrics).set_index('id')
                 final_score_col = pd.Series(0.0, index=metrics_df.index)
                 
+                # Metrics where Higher is Better (Ascending Rank)
                 for metric in ['sharpe', 'sortino', 'momentum', 'info_ratio', 'alpha', 'treynor', 'calmar']:
                     if metric in metrics_df.columns:
-                        final_score_col = final_score_col.add(metrics_df[metric].rank(pct=True) * custom_weights[metric], fill_value=0)
+                        final_score_col = final_score_col.add(metrics_df[metric].rank(pct=True, ascending=True) * custom_weights[metric], fill_value=0)
                 
+                # Metrics where Lower is Better (Descending Rank)
                 for metric in ['volatility', 'beta']:
                     if metric in metrics_df.columns:
                         final_score_col = final_score_col.add(metrics_df[metric].rank(pct=True, ascending=False) * custom_weights[metric], fill_value=0)
                 
+                # Max Drawdown is usually negative, so Max (closest to 0) is better. 
+                # If calculated as absolute, Lower is better.
+                # calculate_max_drawdown returns negative float (e.g. -0.10).
+                # Rank Ascending means -0.50 is Rank 0, -0.05 is Rank 1. This is correct. Higher value (closer to 0) is better.
                 if 'max_dd' in metrics_df.columns:
-                    final_score_col = final_score_col.add(metrics_df['max_dd'].rank(pct=True) * custom_weights['max_dd'], fill_value=0)
+                    final_score_col = final_score_col.add(metrics_df['max_dd'].rank(pct=True, ascending=True) * custom_weights['max_dd'], fill_value=0)
 
-                # --- FIX: Explicitly exclude NaNs to match Standard Strategy logic ---
                 raw_scores = final_score_col.to_dict()
                 scores = {k: v for k, v in raw_scores.items() if not pd.isna(v)}
 
@@ -475,6 +489,9 @@ def main():
     top_n = col_s1.number_input("Top N Funds", 1, 20, DEFAULT_TOP_N)
     holding_days = col_s2.number_input("Rebalance (Days)", 20, TRADING_DAYS_YEAR, DEFAULT_HOLDING)
     
+    # --- NEW: Start Year Selection ---
+    start_year = st.sidebar.number_input("Backtest Start Year", 2000, 2025, 2010, step=1)
+    
     rf_annual = st.sidebar.number_input("Risk Free Rate (%)", 0.0, 15.0, DEFAULT_RISK_FREE*100, 0.5) / 100
     rf_daily = (1 + rf_annual) ** (1/TRADING_DAYS_YEAR) - 1
     config = {'daily_rf': rf_daily, 'annual_rf': rf_annual}
@@ -501,26 +518,31 @@ def main():
         nifty_data = load_nifty_data()
         
     if nav_data is None:
-        st.error("❌ Fund data not found or failed to load."); return
+        st.error("❌ Fund data not found or failed to load. Please check 'data/' folder."); return
     
-    def display_strategy_results(strat_type, c_weights, nav_data, names_map, top_n, holding_days, config, momentum_config, nifty_data):
-        hist_df, eq_curve = run_backtest(nav_data, strat_type, top_n, holding_days, config, c_weights, momentum_config, nifty_data)
+    def display_strategy_results(strat_type, c_weights, nav_data, names_map, top_n, holding_days, config, momentum_config, nifty_data, start_year):
+        hist_df, eq_curve = run_backtest(nav_data, strat_type, top_n, holding_days, config, c_weights, momentum_config, nifty_data, start_year)
         
         if hist_df is None or hist_df.empty:
-            st.warning("Insufficient data for backtest."); return
+            st.warning("Insufficient data for backtest. Try an earlier start year or check your data files."); return
 
         start_date = eq_curve.iloc[0]['date']
         end_date = eq_curve.iloc[-1]['date']
         final_val = eq_curve.iloc[-1]['value']
+        
+        # Calculate Strategy CAGR
         time_period_years = (end_date-start_date).days/365.25
         strat_cagr = (final_val/100)**(1/time_period_years) - 1 if time_period_years > 0 else 0.0
         
+        # Calculate Benchmark CAGR (matched to strategy dates)
         bench_curve = None
         bench_cagr = 0.0
         if nifty_data is not None:
+            # Filter Nifty to match exactly the strategy period
             sub_nifty = nifty_data[(nifty_data.index >= start_date) & (nifty_data.index <= end_date)]
             if not sub_nifty.empty and sub_nifty.iloc[0] > 0:
                 bench_cagr = (sub_nifty.iloc[-1]/sub_nifty.iloc[0])**(1/((sub_nifty.index[-1]-sub_nifty.index[0]).days/365.25)) - 1
+                # Rebase Benchmark to 100
                 bench_curve = (sub_nifty / sub_nifty.iloc[0]) * 100
 
         c1, c2, c3 = st.columns(3)
@@ -532,7 +554,7 @@ def main():
         fig.add_trace(go.Scatter(x=eq_curve['date'], y=eq_curve['value'], name='Strategy', line=dict(color='#00CC96')))
         if bench_curve is not None:
             fig.add_trace(go.Scatter(x=bench_curve.index, y=bench_curve.values, name='Benchmark', line=dict(color='#EF553B', dash='dot')))
-        fig.update_layout(height=400, title="Equity Curve", hovermode="x unified", xaxis=dict(rangeslider=dict(visible=True)))
+        fig.update_layout(height=400, title=f"Equity Curve ({start_date.year} - Present)", hovermode="x unified", xaxis=dict(rangeslider=dict(visible=True)))
         st.plotly_chart(fig, use_container_width=True)
 
         st.divider()
@@ -546,12 +568,10 @@ def main():
             
             if not df.empty:
                 def highlight_top_n(row):
-                    if row['Strategy Rank'] <= top_n: return ['background-color: green'] * len(row)
+                    if row['Strategy Rank'] <= top_n: return ['background-color: #2e7d32; color: white'] * len(row)
                     return [''] * len(row)
                 
                 # Format numbers using column_config instead of style for better interaction
-                # Only highlight style is applied here
-                
                 column_renames = {'volatility': 'Volatility %', 'alpha': 'Alpha %', 'max_dd': 'Max DD %', 'info_ratio': 'Info Ratio', 'treynor': 'Treynor Ratio', 'calmar': 'Calmar Ratio', 'Score': 'Strategy Score'}
                 df_display = df.rename(columns=column_renames)
                 cols_to_display = [c for c in df_display.columns if c not in ['id', 'Actual Rank', 'Score', 'Strategy Score']]
@@ -569,7 +589,7 @@ def main():
                 )
 
     tab_mom, tab_sharpe, tab_custom = st.tabs(["🚀 Momentum Strategy", "⚖️ Sharpe Ratio", "🛠️ Custom Strategy"])
-    context_args = (nav_data, names_map, top_n, holding_days, config, momentum_config, nifty_data)
+    context_args = (nav_data, names_map, top_n, holding_days, config, momentum_config, nifty_data, start_year)
 
     with tab_mom:
         st.info(f"Momentum Weights: 3M={momentum_config['w_3m']:.2f}, 6M={momentum_config['w_6m']:.2f}, 1Y={momentum_config['w_12m']:.2f}. Risk Adjust: {momentum_config['risk_adjust']}")
