@@ -164,7 +164,7 @@ def calculate_alpha_beta_treynor(returns, bench_returns, daily_rf_rate, annual_r
 # 3. DATA LOADING
 # ============================================================================
 
-@st.cache_data
+# NOTE: Cache removed to ensure fresh data load if files change
 def load_fund_data(category_key: str):
     category_to_csv = {
         "largecap": "data/largecap_funds.csv",
@@ -188,11 +188,12 @@ def load_fund_data(category_key: str):
         scheme_map = df[['scheme_code', 'scheme_name']].drop_duplicates('scheme_code').set_index('scheme_code')['scheme_name'].to_dict()
         nav_wide = df.pivot(index='date', columns='scheme_code', values='nav')
         nav_wide = nav_wide.ffill(limit=2) 
+        nav_wide = nav_wide.sort_index() # Explicit sort
         return nav_wide, scheme_map
     except Exception as e:
         st.error(f"Error loading fund data: {e}"); return None, None
 
-@st.cache_data
+# NOTE: Cache removed to ensure fresh data load if files change
 def load_nifty_data():
     path = 'data/nifty100_funds.csv'
     if not os.path.exists(path): 
@@ -320,20 +321,14 @@ def run_backtest(nav_wide, strategy_type, top_n, holding_days, config, custom_we
                 metrics_df = pd.DataFrame(temp_metrics).set_index('id')
                 final_score_col = pd.Series(0.0, index=metrics_df.index)
                 
-                # Metrics where Higher is Better (Ascending Rank)
                 for metric in ['sharpe', 'sortino', 'momentum', 'info_ratio', 'alpha', 'treynor', 'calmar']:
                     if metric in metrics_df.columns:
                         final_score_col = final_score_col.add(metrics_df[metric].rank(pct=True, ascending=True) * custom_weights[metric], fill_value=0)
                 
-                # Metrics where Lower is Better (Descending Rank)
                 for metric in ['volatility', 'beta']:
                     if metric in metrics_df.columns:
                         final_score_col = final_score_col.add(metrics_df[metric].rank(pct=True, ascending=False) * custom_weights[metric], fill_value=0)
                 
-                # Max Drawdown is usually negative, so Max (closest to 0) is better. 
-                # If calculated as absolute, Lower is better.
-                # calculate_max_drawdown returns negative float (e.g. -0.10).
-                # Rank Ascending means -0.50 is Rank 0, -0.05 is Rank 1. This is correct. Higher value (closer to 0) is better.
                 if 'max_dd' in metrics_df.columns:
                     final_score_col = final_score_col.add(metrics_df['max_dd'].rank(pct=True, ascending=True) * custom_weights['max_dd'], fill_value=0)
 
@@ -471,6 +466,7 @@ def generate_snapshot_table(nav_wide, analysis_date, holding_days, strategy_type
         for metric in ranking_directions.keys():
             if metric in df.columns: cols_to_display.append(metric)
 
+    final_cols = [c for c in cols_to_display if c not in df.columns] # Fixed bug here
     final_cols = [c for c in cols_to_display if c in df.columns]
     return df[final_cols].sort_values('Strategy Rank')
 
@@ -489,15 +485,13 @@ def main():
     top_n = col_s1.number_input("Top N Funds", 1, 20, DEFAULT_TOP_N)
     holding_days = col_s2.number_input("Rebalance (Days)", 20, TRADING_DAYS_YEAR, DEFAULT_HOLDING)
     
-    # --- NEW: Start Year Selection ---
+    # --- Start Year Selection ---
     start_year = st.sidebar.number_input("Backtest Start Year", 2000, 2025, 2010, step=1)
     
     rf_annual = st.sidebar.number_input("Risk Free Rate (%)", 0.0, 15.0, DEFAULT_RISK_FREE*100, 0.5) / 100
     rf_daily = (1 + rf_annual) ** (1/TRADING_DAYS_YEAR) - 1
     config = {'daily_rf': rf_daily, 'annual_rf': rf_annual}
 
-  
-    
     st.sidebar.header("🚀 Momentum Configuration")
     mom_c1, mom_c2, mom_c3 = st.sidebar.columns(3)
     w_3m = mom_c1.number_input("3M Weight", 0.0, 10.0, 1.0, 0.1)
@@ -519,7 +513,12 @@ def main():
         
     if nav_data is None:
         st.error("❌ Fund data not found or failed to load. Please check 'data/' folder."); return
-    
+
+    # --- DEBUG INFO IN SIDEBAR ---
+    min_date = nav_data.index.min().strftime('%Y-%m-%d')
+    max_date = nav_data.index.max().strftime('%Y-%m-%d')
+    st.sidebar.info(f"📁 Data Range: {min_date} to {max_date}")
+
     def display_strategy_results(strat_type, c_weights, nav_data, names_map, top_n, holding_days, config, momentum_config, nifty_data, start_year):
         hist_df, eq_curve = run_backtest(nav_data, strat_type, top_n, holding_days, config, c_weights, momentum_config, nifty_data, start_year)
         
