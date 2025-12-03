@@ -180,7 +180,7 @@ def calculate_flexible_momentum(series, w_3m, w_6m, w_12m, use_risk_adjust=False
 
 @st.cache_data
 def load_fund_data(category_key: str):
-    base_path = r"c:\Users\ab528\OneDrive\Desktop\Largecap\data"
+    base_path = r"https://github.com/sat2567/cagr-improved-ranking/tree/sat2567-patch-1/data"
     category_to_csv = {
         "largecap": f"{base_path}\\largecap_funds.csv",
         "smallcap": f"{base_path}\\smallcap_funds.csv",
